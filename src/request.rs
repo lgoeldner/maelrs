@@ -1,7 +1,7 @@
 use crate::{msg_id, Body, Error, Message, Payload};
 
 use log::error;
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 /// gets created for every incoming message and passed to the handler function
@@ -13,12 +13,13 @@ pub struct Request {
 }
 
 #[derive(Debug)]
+/// holds shared state in a request
 pub(super) struct Shared {
     reply_tx: mpsc::Sender<String>,
     rpc_tx: crate::RegisterCallbackSender,
     this_node: u32,
     // TODO: maybe use std::sync::RwLock depending on how often this will block
-    received_broadcasts: RwLock<Vec<u32>>,
+    received_broadcasts: RwLock<HashSet<u32>>,
 }
 
 impl Shared {
@@ -31,7 +32,7 @@ impl Shared {
             reply_tx,
             rpc_tx,
             this_node,
-            received_broadcasts: RwLock::new(vec![]),
+            received_broadcasts: RwLock::new(HashSet::new()),
         }
     }
 }
@@ -43,6 +44,24 @@ impl Request {
 
     pub fn message_payload(&self) -> &Payload {
         &self.message.body.payload
+    }
+
+    // Adds a received message to
+    pub async fn add_broadcast_message(&self, message: u32) -> bool {
+        let mut l = self.shared.received_broadcasts.write().await;
+        // TODO: use hashmap?
+        if !l.contains(&message) {
+            l.insert(message);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// copy the already received messages into a Vec
+    pub async fn get_broadcast_messages(&self) -> Vec<u32> {
+        let lock = self.shared.received_broadcasts.read().await;
+        lock.iter().copied().collect()
     }
 
     /// send a message awaiting a response
@@ -100,6 +119,7 @@ impl Request {
         self.send(msg).await
     }
 
+    /// send a finished message. used by `Self::reply` and `Self::rpc`
     async fn send(&self, msg: Message) -> Result<(), Error> {
         let json = match serde_json::to_string(&msg) {
             Ok(o) => o,

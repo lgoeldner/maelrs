@@ -12,17 +12,16 @@ pub async fn sender_task(mut rx: Receiver<String>) -> Result<(), Error> {
     info!("started sender task!");
     let mut stdout = tokio::io::stdout();
     while let Some(to_send) = rx.recv().await {
-        info!("to send: {to_send}");
         // first, write all the json data
         let res = stdout.write_all(to_send.as_bytes()).await;
 
-        // then write a newline to finish the message and flush the buffer
-        let newline_res = stdout.write_u8(b'\n').await;
-        info!("sent!");
         if let Err(e) = res {
-            error!("failed to write message {to_send} to stdout due to {e}")
+            error!("failed to write message {to_send} to stdout due to {e}");
+            continue;
         }
 
+        // then write a newline to finish the message and flush the buffer
+        let newline_res = stdout.write_u8(b'\n').await;
         if let Err(e) = newline_res {
             error!("failed to finish message {to_send} to stdout due to {e}")
         }
@@ -121,6 +120,19 @@ pub async fn handle_msg(req: Request) -> Result<(), Error> {
 
             req.reply(Payload::GenerateOk { id: guid }).await
         }
+
+        Payload::Broadcast { message } => {
+            req.add_broadcast_message(*message).await;
+            req.reply(Payload::BroadcastOk).await
+        }
+
+        Payload::Read => {
+            let messages = req.get_broadcast_messages().await;
+
+            req.reply(Payload::ReadOk { messages }).await
+        }
+
+        Payload::Topology { topology: _ } => req.reply(Payload::TopologyOk).await,
 
         Payload::Init { .. } => {
             // is handled at setup

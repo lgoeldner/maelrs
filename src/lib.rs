@@ -1,6 +1,6 @@
 use request::Request;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 
 pub use server::Server;
@@ -48,17 +48,30 @@ enum Payload {
     EchoOk {
         echo: String,
     },
-    InitOk,
+
     Init {
         node_id: String,
         node_ids: Vec<String>,
     },
+    InitOk,
+
     Generate,
     GenerateOk {
         id: u128,
     },
+
     Broadcast {
         message: u32,
     },
     BroadcastOk,
+
+    Read,
+    ReadOk {
+        messages: Vec<u32>,
+    },
+
+    Topology {
+        topology: HashMap<String, Vec<String>>,
+    },
+    TopologyOk,
 }

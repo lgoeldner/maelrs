@@ -59,7 +59,6 @@ impl Server {
             // also add any incoming rpc callbacks
             let next_line = tokio::select! {
                 Some((id, callback)) = self.register_callback_rx.recv() => {
-                    info!("received callback waiting on {id}");
                     self.handlers.insert(id, callback);
                     None
                 },
