@@ -1,12 +1,16 @@
-use crate::{msg_id, Body, Error, Message, Payload};
+use crate::{address::Address, msg_id, Body, Error, Message, Payload};
 
 use log::error;
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 /// gets created for every incoming message and passed to the handler function
 /// abstraction for shared state and the RPC protocol
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Request {
     message: Message,
     shared: Arc<Shared>,
@@ -20,6 +24,8 @@ pub(super) struct Shared {
     this_node: u32,
     // TODO: maybe use std::sync::RwLock depending on how often this will block
     received_broadcasts: RwLock<HashSet<u32>>,
+    // only available after `topology` has been received
+    adjacent_nodes: OnceLock<Vec<u32>>,
 }
 
 impl Shared {
@@ -33,9 +39,12 @@ impl Shared {
             rpc_tx,
             this_node,
             received_broadcasts: RwLock::new(HashSet::new()),
+            adjacent_nodes: OnceLock::new(),
         }
     }
 }
+
+const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Request {
     pub(super) fn new(shared: Arc<Shared>, message: Message) -> Self {
@@ -44,6 +53,36 @@ impl Request {
 
     pub fn message_payload(&self) -> &Payload {
         &self.message.body.payload
+    }
+
+    pub fn adjacent_nodes(&self) -> Option<&[u32]> {
+        self.shared.adjacent_nodes.get().map(Vec::as_slice)
+    }
+
+    // Error if topology has already existed
+    pub fn add_topology(&self, topology: HashMap<Address, Vec<Address>>) -> Result<(), Error> {
+        if self.shared.adjacent_nodes.get().is_some() {
+            error!("Tried to initialise topology twice");
+            return Err(Error::TopologyExistedAlready);
+        }
+
+        let adj = &topology[&Address::Node {
+            id: self.shared.this_node,
+        }];
+
+        let it: Vec<_> = adj
+            .iter()
+            .map(|it| match it {
+                Address::Node { id } | Address::Client { id } => *id,
+            })
+            .collect();
+
+        let Ok(()) = self.shared.adjacent_nodes.set(it) else {
+            error!("Tried to initialise topology twice");
+            return Err(Error::TopologyExistedAlready);
+        };
+
+        Ok(())
     }
 
     // Adds a received message to
@@ -70,20 +109,19 @@ impl Request {
     pub async fn rpc(&self, payload: Payload) -> Result<Message, Error> {
         // first, send the reply
         self.reply(payload).await?;
+        self.wait_for_rpc_response(self.message.body.msg_id).await
+    }
 
+    async fn wait_for_rpc_response(&self, msg_id: u32) -> Result<Message, Error> {
         // then wait for the response by registering a oneshot callback channel
         let (tx, rx) = oneshot::channel();
-        self.shared
-            .rpc_tx
-            .send((self.message.body.msg_id, tx))
-            .await
-            .map_err(|e| {
-                error!("RPC from msg {:?} failed due to {e:?}", self.message);
-                Error::SendFailed
-            })?;
+        self.shared.rpc_tx.send((msg_id, tx)).await.map_err(|e| {
+            error!("RPC from msg {:?} failed due to {e:?}", self.message);
+            Error::SendFailed
+        })?;
 
         // wait for the response on `rx` or timeout after 60 seconds
-        let res = tokio::time::timeout(Duration::from_secs(60), rx).await;
+        let res = tokio::time::timeout(RPC_TIMEOUT, rx).await;
 
         // handle errors
         match res {
@@ -138,4 +176,22 @@ impl Request {
     pub fn message(&self) -> &Message {
         &self.message
     }
+
+    pub async fn send_rpc_to(&self, dest: Address, payload: Payload) -> Result<Message, Error> {
+        let msg_id = msg_id::create_unique();
+        let msg = Message {
+            dest,
+            src: self.message.dest.clone(),
+            body: Body {
+                msg_id,
+                in_reply_to: None,
+                payload,
+            },
+        };
+
+        self.send(msg).await?;
+        self.wait_for_rpc_response(msg_id).await
+    }
 }
+
+pub struct MessageFailed {}

@@ -9,6 +9,5 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let mut server = Server::new().await?;
-
     server.run().await
 }

@@ -1,4 +1,5 @@
-use crate::{msg_id, Error, Message, Payload, Request};
+use crate::{address::Address, msg_id, Error, Message, Payload, Request};
+use futures::FutureExt;
 use log::{error, info};
 use rand::RngCore;
 use std::io;
@@ -32,7 +33,7 @@ pub async fn sender_task(mut rx: Receiver<String>) -> Result<(), Error> {
 pub async fn handle_init_message(
     reply_channel: &Sender<String>,
     init_msg: io::Result<Option<String>>,
-) -> Result<(u32, Vec<String>), Error> {
+) -> Result<(u32, Vec<Address>), Error> {
     match init_msg {
         Ok(Some(json)) => {
             let msg = serde_json::from_str::<Message>(&json);
@@ -45,16 +46,7 @@ pub async fn handle_init_message(
                     match &msg.body.payload {
                         Payload::Init { node_id, node_ids } => {
                             // extract the number part and the "n" descriptor from the node id
-                            let Some(("n", to_parse)) = node_id.split_at_checked(1) else {
-                                error!("failed to parse self node id from {node_id}");
-                                return Err(Error::InitFailed);
-                            };
-
-                            // then parse into an int
-                            let this_id: u32 = to_parse.parse().map_err(|e| {
-                                error!("failed to parse node id: {e:?}");
-                                Error::InitFailed
-                            })?;
+                            let this_id = node_id.id();
 
                             // copy the needed data
                             let ret = (this_id, node_ids.clone());
@@ -122,17 +114,65 @@ pub async fn handle_msg(req: Request) -> Result<(), Error> {
         }
 
         Payload::Broadcast { message } => {
-            req.add_broadcast_message(*message).await;
-            req.reply(Payload::BroadcastOk).await
+            req.reply(Payload::BroadcastOk).await?;
+
+            let is_known_message = req.add_broadcast_message(*message).await;
+            if !is_known_message {
+                // gossip the message to other nodes
+                // this is n^2 technically but the clusters are often very small
+                let tasks = req.adjacent_nodes().unwrap_or(&[]).iter().map(|&id| {
+                    req.send_rpc_to(
+                        Address::Node { id },
+                        Payload::Broadcast { message: *message },
+                    )
+                    .then(move |res| async move {
+                        match res {
+                            Ok(resp) => Ok(resp),
+                            Err(e) => {
+                                error!("failed to send RPC to {id} due to {e:?}");
+                                Err(Address::Node { id })
+                            }
+                        }
+                    })
+                });
+
+                let res = futures::future::join_all(tasks).await;
+                for r in res {
+                    match r {
+                        Ok(resp) => match resp.body.payload {
+                            Payload::BroadcastOk => {}
+                            _ => error!("Wrong broadcast response type!"),
+                        },
+                        Err(e) => {
+                            error!("failed to send message to {e}");
+                            // spawn a task that will keep to retry sending that message
+                            let req = req.clone();
+                            let message = *message;
+                            tokio::spawn(async move {
+                                // try to resend, wait until succeeded
+                                while let Err(_) =
+                                    req.send_rpc_to(e, Payload::Broadcast { message }).await
+                                {
+                                    error!("failed to resend {message}");
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            Ok(())
         }
 
         Payload::Read => {
             let messages = req.get_broadcast_messages().await;
-
             req.reply(Payload::ReadOk { messages }).await
         }
 
-        Payload::Topology { topology: _ } => req.reply(Payload::TopologyOk).await,
+        Payload::Topology { topology } => {
+            req.add_topology(topology.clone())?;
+            req.reply(Payload::TopologyOk).await
+        }
 
         Payload::Init { .. } => {
             // is handled at setup

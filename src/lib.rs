@@ -1,6 +1,14 @@
+use address::Address;
+use core::fmt;
 use request::Request;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::{pin, Pin},
+    sync::Arc,
+    task::Poll,
+};
 use tokio::sync::{mpsc, oneshot};
 
 pub use server::Server;
@@ -22,14 +30,18 @@ pub enum Error {
     RPCFailed,
     RPCTimeout,
     NoRPCHandler,
+    TopologyExistedAlready,
+    ParseError,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Message {
-    src: Arc<str>,
-    dest: Arc<str>,
+    src: address::Address,
+    dest: address::Address,
     body: Body,
 }
+
+mod address;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Body {
@@ -50,8 +62,8 @@ enum Payload {
     },
 
     Init {
-        node_id: String,
-        node_ids: Vec<String>,
+        node_id: Address,
+        node_ids: Vec<Address>,
     },
     InitOk,
 
@@ -71,7 +83,7 @@ enum Payload {
     },
 
     Topology {
-        topology: HashMap<String, Vec<String>>,
+        topology: HashMap<Address, Vec<Address>>,
     },
     TopologyOk,
 }
