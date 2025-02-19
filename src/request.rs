@@ -125,8 +125,8 @@ impl Request {
 
         // handle errors
         match res {
-            Err(e) => {
-                error!("RPC timeout after {e:?}");
+            Err(_) => {
+                error!("RPC timeout");
                 Err(Error::RPCTimeout)
             }
             Ok(Err(e)) => {

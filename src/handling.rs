@@ -144,17 +144,21 @@ pub async fn handle_msg(req: Request) -> Result<(), Error> {
                             _ => error!("Wrong broadcast response type!"),
                         },
                         Err(e) => {
-                            error!("failed to send message to {e}");
+                            error!("failed to send message to {e}, spawning retry!");
                             // spawn a task that will keep to retry sending that message
                             let req = req.clone();
                             let message = *message;
                             tokio::spawn(async move {
+                                let mut n = 0;
                                 // try to resend, wait until succeeded
                                 while let Err(_) =
                                     req.send_rpc_to(e, Payload::Broadcast { message }).await
                                 {
-                                    error!("failed to resend {message}");
+                                    n += 1;
+                                    error!("failed to resend {message}, n={n}");
                                 }
+
+                                info!("resend to {e} success after {}", n + 1);
                             });
                         }
                     }
