@@ -1,28 +1,18 @@
 use address::Address;
-use core::fmt;
-use request::Request;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    future::Future,
-    pin::{pin, Pin},
-    sync::Arc,
-    task::Poll,
-};
+use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
-
-pub use server::Server;
 
 mod handling;
 mod msg_id;
-mod request;
-mod server;
+pub mod request;
+pub mod server;
 
 type RegisterCallbackSender = mpsc::Sender<(u32, oneshot::Sender<Message>)>;
 
 #[derive(Debug)]
 pub enum Error {
-    CantHandleMsg,
+    CannotHandle,
     SendFailed,
     SerializeFailed,
     InitFailed,
@@ -30,12 +20,12 @@ pub enum Error {
     RPCFailed,
     RPCTimeout,
     NoRPCHandler,
-    TopologyExistedAlready,
+    TopologyExists,
     ParseError,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Message {
+pub struct Message {
     src: address::Address,
     dest: address::Address,
     body: Body,
@@ -44,7 +34,7 @@ struct Message {
 mod address;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Body {
+pub struct Body {
     msg_id: u32,
     in_reply_to: Option<u32>,
     #[serde(flatten)]
@@ -53,7 +43,7 @@ struct Body {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Payload {
+pub enum Payload {
     Echo {
         echo: String,
     },
@@ -86,4 +76,9 @@ enum Payload {
         topology: HashMap<Address, Vec<Address>>,
     },
     TopologyOk,
+
+    Add {
+        delta: u32,
+    },
+    AddOk,
 }

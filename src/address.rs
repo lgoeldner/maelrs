@@ -13,6 +13,22 @@ impl Address {
             Address::Node { id } | Address::Client { id } => *id,
         }
     }
+
+    /// Returns `true` if the address is [`Node`].
+    ///
+    /// [`Node`]: Address::Node
+    #[must_use]
+    pub fn is_node(&self) -> bool {
+        matches!(self, Self::Node { .. })
+    }
+
+    /// Returns `true` if the address is [`Client`].
+    ///
+    /// [`Client`]: Address::Client
+    #[must_use]
+    pub fn is_client(&self) -> bool {
+        matches!(self, Self::Client { .. })
+    }
 }
 
 impl fmt::Display for Address {

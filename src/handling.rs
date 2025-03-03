@@ -1,9 +1,6 @@
-use crate::{address::Address, msg_id, Error, Message, Payload, Request};
-use futures::FutureExt;
+use crate::{address::Address, msg_id, Error, Message, Payload};
 use log::{error, info};
-use rand::RngCore;
 use std::io;
-use std::time::SystemTime;
 use tokio::{
     io::AsyncWriteExt,
     sync::mpsc::{Receiver, Sender},
@@ -48,8 +45,14 @@ pub async fn handle_init_message(
                             // extract the number part and the "n" descriptor from the node id
                             let this_id = node_id.id();
 
+                            let other_ids = node_ids
+                                .iter()
+                                .cloned()
+                                .filter(|it| it != node_id)
+                                .collect::<Vec<_>>();
+
                             // copy the needed data
-                            let ret = (this_id, node_ids.clone());
+                            let ret = (this_id, other_ids);
                             // and do the replying
                             // first, create the reply message
                             let reply = Message {
@@ -86,105 +89,6 @@ pub async fn handle_init_message(
         Err(e) => {
             error!("failed to receive init message due to {e}");
             Err(Error::InitFailed)
-        }
-    }
-}
-
-pub async fn handle_msg(req: Request) -> Result<(), Error> {
-    match req.message_payload() {
-        // just echo the same message back
-        Payload::Echo { echo } => req.reply(Payload::EchoOk { echo: echo.clone() }).await,
-        Payload::Generate => {
-            // get the millis since the epoch
-            let since_epoch = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(o) => o,
-                Err(_) => {
-                    error!("system time is set before the Unix Epoch");
-                    return Err(Error::TimeError);
-                }
-            };
-
-            let millis = since_epoch.as_millis();
-
-            // combine the millis with a random number
-            let random_num = rand::rng().next_u32();
-            let guid = (millis << 16) ^ random_num as u128;
-
-            req.reply(Payload::GenerateOk { id: guid }).await
-        }
-
-        Payload::Broadcast { message } => {
-            req.reply(Payload::BroadcastOk).await?;
-
-            let is_known_message = req.add_broadcast_message(*message).await;
-            if !is_known_message {
-                // gossip the message to other nodes
-                // this is n^2 technically but the clusters are often very small
-                let tasks = req.adjacent_nodes().unwrap_or(&[]).iter().map(|&id| {
-                    req.send_rpc_to(
-                        Address::Node { id },
-                        Payload::Broadcast { message: *message },
-                    )
-                    .then(move |res| async move {
-                        match res {
-                            Ok(resp) => Ok(resp),
-                            Err(e) => {
-                                error!("failed to send RPC to {id} due to {e:?}");
-                                Err(Address::Node { id })
-                            }
-                        }
-                    })
-                });
-
-                let res = futures::future::join_all(tasks).await;
-                for r in res {
-                    match r {
-                        Ok(resp) => match resp.body.payload {
-                            Payload::BroadcastOk => {}
-                            _ => error!("Wrong broadcast response type!"),
-                        },
-                        Err(e) => {
-                            error!("failed to send message to {e}, spawning retry!");
-                            // spawn a task that will keep to retry sending that message
-                            let req = req.clone();
-                            let message = *message;
-                            tokio::spawn(async move {
-                                let mut n = 0;
-                                // try to resend, wait until succeeded
-                                while let Err(_) =
-                                    req.send_rpc_to(e, Payload::Broadcast { message }).await
-                                {
-                                    n += 1;
-                                    error!("failed to resend {message}, n={n}");
-                                }
-
-                                info!("resend to {e} success after {}", n + 1);
-                            });
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        }
-
-        Payload::Read => {
-            let messages = req.get_broadcast_messages().await;
-            req.reply(Payload::ReadOk { messages }).await
-        }
-
-        Payload::Topology { topology } => {
-            req.add_topology(topology.clone())?;
-            req.reply(Payload::TopologyOk).await
-        }
-
-        Payload::Init { .. } => {
-            // is handled at setup
-            panic!("init message in `handle_msg`");
-        }
-        _ => {
-            error!("cant handle payload {req:?}!");
-            Err(Error::CantHandleMsg)
         }
     }
 }

@@ -1,12 +1,8 @@
 use crate::{address::Address, msg_id, Body, Error, Message, Payload};
 
 use log::error;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::{mpsc, oneshot};
 
 /// gets created for every incoming message and passed to the handler function
 /// abstraction for shared state and the RPC protocol
@@ -22,10 +18,7 @@ pub(super) struct Shared {
     reply_tx: mpsc::Sender<String>,
     rpc_tx: crate::RegisterCallbackSender,
     this_node: u32,
-    // TODO: maybe use std::sync::RwLock depending on how often this will block
-    received_broadcasts: RwLock<HashSet<u32>>,
-    // only available after `topology` has been received
-    adjacent_nodes: OnceLock<Vec<u32>>,
+    other_nodes: Box<[Address]>,
 }
 
 impl Shared {
@@ -33,13 +26,13 @@ impl Shared {
         reply_tx: mpsc::Sender<String>,
         rpc_tx: crate::RegisterCallbackSender,
         this_node: u32,
+        other_nodes: Box<[Address]>,
     ) -> Self {
         Self {
             reply_tx,
             rpc_tx,
             this_node,
-            received_broadcasts: RwLock::new(HashSet::new()),
-            adjacent_nodes: OnceLock::new(),
+            other_nodes,
         }
     }
 }
@@ -51,56 +44,18 @@ impl Request {
         Self { message, shared }
     }
 
+    #[inline]
     pub fn message_payload(&self) -> &Payload {
         &self.message.body.payload
     }
 
-    pub fn adjacent_nodes(&self) -> Option<&[u32]> {
-        self.shared.adjacent_nodes.get().map(Vec::as_slice)
+    pub fn this_node(&self) -> u32 {
+        self.shared.this_node
     }
 
-    // Error if topology has already existed
-    pub fn add_topology(&self, topology: HashMap<Address, Vec<Address>>) -> Result<(), Error> {
-        if self.shared.adjacent_nodes.get().is_some() {
-            error!("Tried to initialise topology twice");
-            return Err(Error::TopologyExistedAlready);
-        }
-
-        let adj = &topology[&Address::Node {
-            id: self.shared.this_node,
-        }];
-
-        let it: Vec<_> = adj
-            .iter()
-            .map(|it| match it {
-                Address::Node { id } | Address::Client { id } => *id,
-            })
-            .collect();
-
-        let Ok(()) = self.shared.adjacent_nodes.set(it) else {
-            error!("Tried to initialise topology twice");
-            return Err(Error::TopologyExistedAlready);
-        };
-
-        Ok(())
-    }
-
-    // Adds a received message to
-    pub async fn add_broadcast_message(&self, message: u32) -> bool {
-        let mut l = self.shared.received_broadcasts.write().await;
-        // TODO: use hashmap?
-        if !l.contains(&message) {
-            l.insert(message);
-            false
-        } else {
-            true
-        }
-    }
-
-    /// copy the already received messages into a Vec
-    pub async fn get_broadcast_messages(&self) -> Vec<u32> {
-        let lock = self.shared.received_broadcasts.read().await;
-        lock.iter().copied().collect()
+    #[inline]
+    pub fn other_nodes(&self) -> &[Address] {
+        self.shared.other_nodes.as_ref()
     }
 
     /// send a message awaiting a response
@@ -175,6 +130,21 @@ impl Request {
 
     pub fn message(&self) -> &Message {
         &self.message
+    }
+
+    pub async fn send_msg_to(&self, dest: Address, payload: Payload) -> Result<(), Error> {
+        let msg_id = msg_id::create_unique();
+        let msg = Message {
+            dest,
+            src: self.message.dest.clone(),
+            body: Body {
+                msg_id,
+                in_reply_to: None,
+                payload,
+            },
+        };
+
+        self.send(msg).await
     }
 
     pub async fn send_rpc_to(&self, dest: Address, payload: Payload) -> Result<Message, Error> {
