@@ -1,8 +1,12 @@
 ### Implementation of `Gossip Glomers`, a set of distributed systems challenges by fly.io
 
 currently finished worloads:
-- Echo
+- Echo binary:
+  - bin: echo
 - Unique ID
+  - bin: guid
+- Broadcast
+  - finished: a, b
+  - bin: broadcast
 
-The project uses async rust and has a similar api to the go maelstrom library,
-except more tightly integrated and with more convenient RPC messages which can just be awaited
+The project has a binary for each workload and a shared api.

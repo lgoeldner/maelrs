@@ -49,8 +49,10 @@ impl Request {
         &self.message.body.payload
     }
 
-    pub fn this_node(&self) -> u32 {
-        self.shared.this_node
+    pub fn this_node(&self) -> Address {
+        Address::Node {
+            id: self.shared.this_node,
+        }
     }
 
     #[inline]

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 
+pub mod address;
 mod handling;
 mod msg_id;
 pub mod request;
@@ -31,7 +32,11 @@ pub struct Message {
     body: Body,
 }
 
-mod address;
+impl Message {
+    pub fn payload(&self) -> &Payload {
+        &self.body.payload
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Body {

@@ -15,5 +15,8 @@ futures = "0.3.31"
 [[bin]]
 name = "echo"
 
+[[bin]]
+name = "guid"
+
 [features]
 efficient = []
